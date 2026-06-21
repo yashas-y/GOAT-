@@ -422,10 +422,9 @@ function drawPlayerSprite(c, x, y, jersey, scale) {
 
 // ---- ground obstacle types ----
 const OBSTACLE_TYPES = [
-  { type:'cone_single',  w:22, h:34, weight:3 },
-  { type:'cone_row',     w:70, h:34, weight:2 },
-  { type:'defender_wall',w:40, h:78, weight:2 },
-  { type:'tackle',       w:78, h:26, weight:2 },
+  { type:'cone_single',  w:34, h:48, weight:3 },
+  { type:'cone_row',     w:104, h:48, weight:2 },
+  { type:'defender_wall',w:0,  h:82, weight:2 },  // w computed at spawn (varies)
 ];
 
 function pickObstacleType() {
@@ -435,17 +434,41 @@ function pickObstacleType() {
 }
 
 function drawCone(c, x, y, w) {
+  const h = w * 1.4; // taller, chunkier cone
   c.fillStyle = '#FF6600';
   c.beginPath();
-  c.moveTo(x + w/2, y - 34);
-  c.lineTo(x + w*0.15, y);
-  c.lineTo(x + w*0.85, y);
+  c.moveTo(x + w/2, y - h);
+  c.lineTo(x + w*0.12, y);
+  c.lineTo(x + w*0.88, y);
   c.closePath();
   c.fill();
+  // two white stripes
   c.fillStyle = '#FFFFFF';
-  c.fillRect(x + w*0.28, y - 18, w*0.44, 5);
+  c.fillRect(x + w*0.26, y - h*0.5, w*0.48, h*0.13);
+  c.fillRect(x + w*0.32, y - h*0.75, w*0.36, h*0.10);
+  // base
   c.fillStyle = '#CC5200';
-  c.fillRect(x + w*0.05, y - 4, w*0.9, 4);
+  c.fillRect(x + w*0.02, y - 5, w*0.96, 5);
+}
+
+// draw one defender at (x, baselineY) with given height, hopping by `lift`
+function drawDefender(c, x, baselineY, dh, dw, lift, kit) {
+  const top = baselineY - dh - lift;
+  c.fillStyle = kit;                       // jersey body
+  c.fillRect(x+4, top + dh*0.18, dw-8, dh*0.62);
+  c.fillStyle = '#F5C6A0';                 // head
+  c.fillRect(x+dw*0.28, top, dw*0.44, dh*0.18);
+  c.fillStyle = '#1a1a1a';                 // hair
+  c.fillRect(x+dw*0.28, top, dw*0.44, dh*0.05);
+  c.fillStyle = '#F5C6A0';                 // arms (raised when hopping)
+  const armDrop = lift > 4 ? -3 : 2;
+  c.fillRect(x, top + dh*0.2 + armDrop, 4, dh*0.34);
+  c.fillRect(x+dw-4, top + dh*0.2 + armDrop, 4, dh*0.34);
+  c.fillStyle = '#fff';                    // shorts
+  c.fillRect(x+4, top + dh*0.78, dw-8, dh*0.12);
+  c.fillStyle = '#1a1a1a';                 // legs
+  c.fillRect(x+dw*0.22, top + dh*0.9, dw*0.18, dh*0.1 + lift);
+  c.fillRect(x+dw*0.6, top + dh*0.9, dw*0.18, dh*0.1 + lift);
 }
 
 function drawObstacle(c, o) {
@@ -453,30 +476,15 @@ function drawObstacle(c, o) {
   if (o.type === 'cone_single') {
     drawCone(c, x, y, o.w);
   } else if (o.type === 'cone_row') {
-    drawCone(c, x, y, 22);
-    drawCone(c, x + 24, y, 22);
-    drawCone(c, x + 48, y, 22);
+    drawCone(c, x, y, 34);
+    drawCone(c, x + 36, y, 34);
+    drawCone(c, x + 72, y, 34);
   } else if (o.type === 'defender_wall') {
-    c.fillStyle = '#222';
-    c.fillRect(x+8, y-78, o.w-16, 60);
-    c.fillStyle = '#F5C6A0';
-    c.fillRect(x+14, y-78, o.w-28, 10);
-    c.fillStyle = '#222';
-    c.fillRect(x+14, y-78, o.w-28, 3);
-    c.fillStyle = '#222';
-    c.fillRect(x+10, y-18, 8, 18);
-    c.fillRect(x+o.w-18, y-18, 8, 18);
-    c.fillStyle = '#DA291C';
-    c.fillRect(x+8, y-50, o.w-16, 6);
-  } else if (o.type === 'tackle') {
-    c.fillStyle = '#1a3a8a';
-    c.fillRect(x, y-14, o.w, 12);
-    c.fillStyle = '#F5C6A0';
-    c.fillRect(x+o.w-16, y-26, 14, 14);
-    c.fillStyle = '#fff';
-    c.fillRect(x+4, y-12, o.w-30, 4);
-    c.fillStyle = '#111';
-    c.fillRect(x, y-6, 12, 6);
+    // wall of players at varied heights; each may hop (o.lift) at high scores
+    const kits = ['#DA291C', '#1a3a8a', '#222', '#006600'];
+    o.members.forEach((m, i) => {
+      drawDefender(c, x + m.dx, y, m.dh, m.dw, o.lift || 0, kits[i % kits.length]);
+    });
   }
 }
 
@@ -514,6 +522,7 @@ function drawBg(c, w, h, frame) {
    ============================================================ */
 let gameState = 'select';
 let score = 0, frame = 0, gameSpeed = 6;
+let scoreAccum = 0;
 let groundY = 0;
 const FIREBALL_START_SCORE = 500;
 
@@ -705,7 +714,31 @@ function clearToSpawn() {
 function spawnObstacle() {
   groundY = getGroundY();
   const t = pickObstacleType();
-  obstacles.push({ x: canvas.width + 10, y: groundY, w: t.w, h: t.h, type: t.type, passed:false });
+  const obs = { x: canvas.width + 10, y: groundY, w: t.w, h: t.h, type: t.type, passed:false };
+
+  if (t.type === 'defender_wall') {
+    // 2-4 players of varied heights standing shoulder to shoulder
+    const count = 2 + Math.floor(Math.random() * 3); // 2,3,4
+    const members = [];
+    let dx = 0;
+    let maxH = 0;
+    for (let i = 0; i < count; i++) {
+      const dw = 22 + Math.floor(Math.random() * 6);      // body width
+      const dh = 58 + Math.floor(Math.random() * 26);     // varied height 58-84
+      members.push({ dx, dw, dh });
+      dx += dw + 2;
+      maxH = Math.max(maxH, dh);
+    }
+    obs.members = members;
+    obs.w = dx;
+    obs.h = maxH;
+    obs.lift = 0;
+    // jumping wall only at higher scores
+    obs.canJump = score >= 10000;
+    obs.jumpTriggered = false;
+  }
+
+  obstacles.push(obs);
 }
 
 // fireball spawns must NOT coincide with a goalpost jump window.
@@ -722,7 +755,11 @@ function spawnFireball() {
 function checkCollision(obs) {
   const px=player.x-12, py=player.y-54, pw=24, ph=54;
   if (obs.type) {
-    return px+pw > obs.x+3 && px < obs.x+obs.w-3 && py+ph > obs.y-obs.h+3 && py < obs.y+3;
+    const lift = obs.lift || 0;
+    // when the wall hops, its whole body rises by `lift`, opening a gap underneath
+    const top = obs.y - obs.h - lift + 3;   // top edge of obstacle
+    const bottom = obs.y - lift + 3;        // bottom edge (rises when hopping)
+    return px+pw > obs.x+3 && px < obs.x+obs.w-3 && py+ph > top && py < bottom;
   }
   const dx=player.x-obs.x, dy=(player.y-27)-obs.y;
   return Math.sqrt(dx*dx+dy*dy) < 22;
@@ -742,7 +779,7 @@ function startGame() {
   document.getElementById('leaderboard-panel').style.display='block';
   document.getElementById('speed-indicator').style.display='block';
 
-  gameState='playing'; score=0; frame=0; gameSpeed=6;
+  gameState='playing'; score=0; scoreAccum=0; frame=0; gameSpeed=6;
   runStartTime = Date.now();
   obstacles=[]; fireballs=[];
   groundY=getGroundY(); regenStars(canvas.width, canvas.height);
@@ -797,18 +834,21 @@ function goToMenu() {
 function loop() {
   if (gameState!=='playing') return;
   frame++; groundY=getGroundY();
-  gameSpeed = 6 + Math.floor(score/200) * 0.6;
+  gameSpeed = 6 + Math.floor(score/600) * 0.6;
   if (gameSpeed > 14) gameSpeed = 14;
 
   player.vy += 0.8; player.y += player.vy;
   if (player.y>=groundY){ player.y=groundY; player.vy=0; player.jumping=false; }
 
-  score++;
+  // score climbs ~3x slower than frame rate (≈20 pts/sec instead of 60)
+  scoreAccum += 0.34;
+  const prevScore = score;
+  score = Math.floor(scoreAccum);
   document.getElementById('score-display').textContent = score;
   document.getElementById('speed-indicator').textContent = `speed ${gameSpeed.toFixed(1)}x`;
 
-  // fireballs unlock at FIREBALL_START_SCORE
-  if (score === FIREBALL_START_SCORE) scheduleNextFireball();
+  // fireballs unlock at FIREBALL_START_SCORE (crossed this frame)
+  if (prevScore < FIREBALL_START_SCORE && score >= FIREBALL_START_SCORE) scheduleNextFireball();
 
   // goalpost spawn: only when timer is up AND there's safe clearance
   framesToNextObstacle--;
@@ -829,6 +869,23 @@ function loop() {
   for (let o of obstacles) o.x -= gameSpeed;
   for (let f of fireballs) f.x -= gameSpeed + 2;
 
+  // defender walls leap up as the player gets close (high-score mechanic)
+  for (let o of obstacles) {
+    if (o.type === 'defender_wall' && o.canJump) {
+      const dist = o.x - player.x;
+      // trigger the leap when the wall is ~180px ahead, once
+      if (!o.jumpTriggered && dist < 180 && dist > 0) {
+        o.jumpTriggered = true;
+        o.jumpVel = -7;   // upward hop velocity
+      }
+      if (o.jumpTriggered) {
+        o.lift += o.jumpVel;
+        o.jumpVel += 0.5;            // gravity on the hop
+        if (o.lift <= 0) { o.lift = 0; o.jumpVel = 0; } // landed
+      }
+    }
+  }
+
   for (let o of obstacles) if (checkCollision(o)) return void gameOver();
   for (let f of fireballs) if (checkCollision(f)) return void gameOver();
 
@@ -846,7 +903,7 @@ function loop() {
   ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.ellipse(player.x,groundY+4,20,6,0,0,Math.PI*2); ctx.fill();
   drawPlayerSprite(ctx, player.x, player.y-54, currentJersey, SCALE);
 
-  if (score === FIREBALL_START_SCORE) {
+  if (score >= FIREBALL_START_SCORE && score <= FIREBALL_START_SCORE + 15) {
     ctx.fillStyle='#FF4500'; ctx.font='bold 20px Courier New'; ctx.textAlign='center';
     ctx.fillText('FIREBALLS INCOMING', w/2, h*0.3); ctx.textAlign='left';
   }
