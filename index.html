@@ -198,8 +198,8 @@
 /* ============================================================
    SUPABASE CONFIG  — fill these two in (see setup steps)
    ============================================================ */
-const SUPABASE_URL = "https://pcxiuftsxofmyaqfyzuj.supabase.co";       // e.g. https://abcdefgh.supabase.co
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBjeGl1ZnRzeG9mbXlhcWZ5enVqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE5ODI1NTgsImV4cCI6MjA5NzU1ODU1OH0.Djvu3eSJoUvq4tGvekZmXG1uBPS03mnfsW6_lcTk-oc";  // your public anon key
+const SUPABASE_URL = "https://pcxiuftsxofmyaqfyzuj.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBjeGl1ZnRzeG9mbXlhcWZ5enVqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE5ODI1NTgsImV4cCI6MjA5NzU1ODU1OH0.Djvu3eSJoUvq4tGvekZmXG1uBPS03mnfsW6_lcTk-oc";
 const LB_ENABLED = SUPABASE_URL && SUPABASE_ANON_KEY;
 
 async function sbInsertScore(name, score, player, jersey) {
@@ -420,15 +420,64 @@ function drawPlayerSprite(c, x, y, jersey, scale) {
   c.restore();
 }
 
-function drawGoalpost(c, x, y) {
-  const s = 2;
+// ---- ground obstacle types ----
+const OBSTACLE_TYPES = [
+  { type:'cone_single',  w:22, h:34, weight:3 },
+  { type:'cone_row',     w:70, h:34, weight:2 },
+  { type:'defender_wall',w:40, h:78, weight:2 },
+  { type:'tackle',       w:78, h:26, weight:2 },
+];
+
+function pickObstacleType() {
+  const pool = [];
+  OBSTACLE_TYPES.forEach(o => { for (let i=0;i<o.weight;i++) pool.push(o); });
+  return pool[Math.floor(Math.random()*pool.length)];
+}
+
+function drawCone(c, x, y, w) {
+  c.fillStyle = '#FF6600';
+  c.beginPath();
+  c.moveTo(x + w/2, y - 34);
+  c.lineTo(x + w*0.15, y);
+  c.lineTo(x + w*0.85, y);
+  c.closePath();
+  c.fill();
   c.fillStyle = '#FFFFFF';
-  c.fillRect(x, y-40*s, 4*s, 40*s);
-  c.fillRect(x+20*s, y-40*s, 4*s, 40*s);
-  c.fillRect(x, y-40*s, 24*s, 4*s);
-  c.fillStyle = 'rgba(255,255,255,0.3)';
-  for (let i=0;i<5;i++) c.fillRect(x+4, y-40*s+4+i*10, 20*s, 2);
-  for (let i=0;i<5;i++) c.fillRect(x+4+i*10, y-40*s+4, 2, 40*s-4);
+  c.fillRect(x + w*0.28, y - 18, w*0.44, 5);
+  c.fillStyle = '#CC5200';
+  c.fillRect(x + w*0.05, y - 4, w*0.9, 4);
+}
+
+function drawObstacle(c, o) {
+  const x = o.x, y = o.y;
+  if (o.type === 'cone_single') {
+    drawCone(c, x, y, o.w);
+  } else if (o.type === 'cone_row') {
+    drawCone(c, x, y, 22);
+    drawCone(c, x + 24, y, 22);
+    drawCone(c, x + 48, y, 22);
+  } else if (o.type === 'defender_wall') {
+    c.fillStyle = '#222';
+    c.fillRect(x+8, y-78, o.w-16, 60);
+    c.fillStyle = '#F5C6A0';
+    c.fillRect(x+14, y-78, o.w-28, 10);
+    c.fillStyle = '#222';
+    c.fillRect(x+14, y-78, o.w-28, 3);
+    c.fillStyle = '#222';
+    c.fillRect(x+10, y-18, 8, 18);
+    c.fillRect(x+o.w-18, y-18, 8, 18);
+    c.fillStyle = '#DA291C';
+    c.fillRect(x+8, y-50, o.w-16, 6);
+  } else if (o.type === 'tackle') {
+    c.fillStyle = '#1a3a8a';
+    c.fillRect(x, y-14, o.w, 12);
+    c.fillStyle = '#F5C6A0';
+    c.fillRect(x+o.w-16, y-26, 14, 14);
+    c.fillStyle = '#fff';
+    c.fillRect(x+4, y-12, o.w-30, 4);
+    c.fillStyle = '#111';
+    c.fillRect(x, y-6, 12, 6);
+  }
 }
 
 function drawFireball(c, x, y, frame) {
@@ -628,35 +677,52 @@ function scheduleNextObstacle() {
 function scheduleNextFireball() {
   framesToNextFireball = Math.floor(160 + Math.random() * 220);
 }
+
+// Jump physics: vy0 = -16, gravity = 0.8 → airtime ≈ 2*16/0.8 = 40 frames.
+// Horizontal distance covered mid-jump = airtime * speed. Any obstacle must be
+// at least this far behind the previous one so the player can land & re-jump.
 function jumpAirtimeFrames() { return (2 * 16) / 0.8; } // 40
 function safeGapPx() {
+  // distance traveled during a full jump + a reaction buffer, scaled by speed
   return jumpAirtimeFrames() * gameSpeed + 70;
 }
+
+// rightmost edge of anything currently on screen (goalpost or fireball)
 function rightmostObstacleX() {
   let maxX = -Infinity;
   for (const o of obstacles) maxX = Math.max(maxX, o.x + o.w);
   for (const f of fireballs) maxX = Math.max(maxX, f.x + 20);
   return maxX === -Infinity ? -Infinity : maxX;
 }
+
+// is it safe to place a new object at spawn x (canvas right edge)?
 function clearToSpawn() {
   const last = rightmostObstacleX();
   if (last === -Infinity) return true;
   return (canvas.width - last) >= safeGapPx();
 }
+
 function spawnObstacle() {
   groundY = getGroundY();
-  obstacles.push({ x: canvas.width + 10, y: groundY, w: 48, h: 80, type:'goalpost', passed:false });
+  const t = pickObstacleType();
+  obstacles.push({ x: canvas.width + 10, y: groundY, w: t.w, h: t.h, type: t.type, passed:false });
 }
+
+// fireball spawns must NOT coincide with a goalpost jump window.
+// place it in a clear stretch, high enough that a GROUNDED player is always safe
+// (you dodge by NOT jumping) but it punishes a mistimed jump.
 function spawnFireball() {
   groundY = getGroundY();
+  // grounded player head sits ~54px above groundY; keep fireball bottom above that.
+  // band: groundY-95 (just clears a standing player) up to groundY-135 (mid-jump height)
   const band = groundY - 95 - Math.random() * 40;
   fireballs.push({ x: canvas.width + 20, y: band, passed:false });
 }
 
 function checkCollision(obs) {
   const px=player.x-12, py=player.y-54, pw=24, ph=54;
-  if (obs.type==='goalpost') {
-    return px+pw > obs.x+4 && px < obs.x+obs.w-4 && py+ph > obs.y-obs.h+4 && py < obs.y+4;
+  if (obs.type) {
+    return px+pw > obs.x+3 && px < obs.x+obs.w-3 && py+ph > obs.y-obs.h+3 && py < obs.y+3;
   }
   const dx=player.x-obs.x, dy=(player.y-27)-obs.y;
   return Math.sqrt(dx*dx+dy*dy) < 22;
@@ -744,15 +810,19 @@ function loop() {
   // fireballs unlock at FIREBALL_START_SCORE
   if (score === FIREBALL_START_SCORE) scheduleNextFireball();
 
+  // goalpost spawn: only when timer is up AND there's safe clearance
   framesToNextObstacle--;
   if (framesToNextObstacle <= 0) {
     if (clearToSpawn()) { spawnObstacle(); scheduleNextObstacle(); }
+    // else: hold, retry next frame — prevents impossible stacking
   }
 
+  // fireball spawn: same clearance gate, so it never lands on a goalpost jump
   if (score >= FIREBALL_START_SCORE) {
     framesToNextFireball--;
     if (framesToNextFireball <= 0) {
       if (clearToSpawn()) { spawnFireball(); scheduleNextFireball(); }
+      // else: hold, retry next frame
     }
   }
 
@@ -769,7 +839,7 @@ function loop() {
   ctx.clearRect(0,0,w,h);
   drawBg(ctx,w,h,frame);
   drawGround(ctx,groundY,w);
-  for (let o of obstacles) drawGoalpost(ctx,o.x,o.y);
+  for (let o of obstacles) drawObstacle(ctx,o);
   for (let f of fireballs) drawFireball(ctx,f.x,f.y,frame);
 
   player.animTick++;
