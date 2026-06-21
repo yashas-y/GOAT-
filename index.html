@@ -628,14 +628,28 @@ function scheduleNextObstacle() {
 function scheduleNextFireball() {
   framesToNextFireball = Math.floor(160 + Math.random() * 220);
 }
+function jumpAirtimeFrames() { return (2 * 16) / 0.8; } // 40
+function safeGapPx() {
+  return jumpAirtimeFrames() * gameSpeed + 70;
+}
+function rightmostObstacleX() {
+  let maxX = -Infinity;
+  for (const o of obstacles) maxX = Math.max(maxX, o.x + o.w);
+  for (const f of fireballs) maxX = Math.max(maxX, f.x + 20);
+  return maxX === -Infinity ? -Infinity : maxX;
+}
+function clearToSpawn() {
+  const last = rightmostObstacleX();
+  if (last === -Infinity) return true;
+  return (canvas.width - last) >= safeGapPx();
+}
 function spawnObstacle() {
   groundY = getGroundY();
   obstacles.push({ x: canvas.width + 10, y: groundY, w: 48, h: 80, type:'goalpost', passed:false });
 }
 function spawnFireball() {
   groundY = getGroundY();
-  // fly in the band between a standing head and the top of a jump arc — must jump-dodge or stay grounded
-  const band = groundY - 70 - Math.random() * 50;
+  const band = groundY - 95 - Math.random() * 40;
   fireballs.push({ x: canvas.width + 20, y: band, passed:false });
 }
 
@@ -731,11 +745,15 @@ function loop() {
   if (score === FIREBALL_START_SCORE) scheduleNextFireball();
 
   framesToNextObstacle--;
-  if (framesToNextObstacle <= 0) { spawnObstacle(); scheduleNextObstacle(); }
+  if (framesToNextObstacle <= 0) {
+    if (clearToSpawn()) { spawnObstacle(); scheduleNextObstacle(); }
+  }
 
   if (score >= FIREBALL_START_SCORE) {
     framesToNextFireball--;
-    if (framesToNextFireball <= 0) { spawnFireball(); scheduleNextFireball(); }
+    if (framesToNextFireball <= 0) {
+      if (clearToSpawn()) { spawnFireball(); scheduleNextFireball(); }
+    }
   }
 
   for (let o of obstacles) o.x -= gameSpeed;
