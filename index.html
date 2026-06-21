@@ -13,8 +13,8 @@
 
   #select-screen {
     position: absolute; inset: 0; background: #0d0d1a;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 22px; padding: 16px; overflow-y: auto;
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+    gap: 18px; padding: 24px 16px 40px; overflow-y: auto;
   }
   .game-title {
     font-size: 30px; font-weight: 900; letter-spacing: 4px;
@@ -64,7 +64,28 @@
   .vs-winner { text-align: center; font-size: 10px; letter-spacing: 2px; color: #FFD700; height: 14px; margin-bottom: 8px; }
   .dual-lb { display: flex; gap: 16px; margin-top: 6px; }
   .dual-lb-col { flex: 1; background: rgba(0,0,0,.4); border: 1px solid #222; border-radius: 4px; padding: 8px 10px; }
+  .dual-lb-list { max-height: 180px; overflow-y: auto; }
+  .dual-lb-list::-webkit-scrollbar { width: 6px; }
+  .dual-lb-list::-webkit-scrollbar-thumb { background: #FFD70055; border-radius: 3px; }
+  .dual-lb-list::-webkit-scrollbar-track { background: #111; }
+  .my-rank-tag { font-size: 9px; color: #FFD700; text-align: center; margin-top: 6px; letter-spacing: 1px; padding-top: 6px; border-top: 1px solid #222; }
   .dual-lb-title { font-size: 8px; letter-spacing: 1px; color: #888; margin-bottom: 6px; text-align: center; }
+
+  /* compact layout for shorter screens so nothing clips */
+  @media (max-height: 780px) {
+    #select-screen { gap: 12px; padding: 14px 16px 30px; }
+    .game-title { font-size: 22px; }
+    .subtitle { margin-top: 3px; }
+    .player-card { padding: 8px 8px; }
+    .player-card canvas, .jersey-card canvas { transform: scale(0.85); }
+    .vs-score { font-size: 22px; }
+    .section-label { margin-bottom: 4px; }
+    .jersey-card { padding: 5px; }
+  }
+  @media (max-height: 640px) {
+    .game-title { font-size: 18px; }
+    .dual-lb { display: none; }  /* hide detailed lists, keep the VS bar */
+  }
 
   #gameover-screen { position: absolute; inset: 0; background: rgba(0,0,0,.88); display: none; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
   .go-title { font-size: 34px; color: #FFD700; letter-spacing: 4px; font-weight: 900; text-shadow: 3px 3px 0 #8B6914; }
@@ -104,11 +125,13 @@
       <div class="dual-lb">
         <div class="dual-lb-col">
           <div class="dual-lb-title">TOP MESSI RUNS</div>
-          <div id="lb-messi"></div>
+          <div class="dual-lb-list" id="lb-messi"></div>
+          <div class="my-rank-tag" id="rank-messi"></div>
         </div>
         <div class="dual-lb-col">
           <div class="dual-lb-title">TOP RONALDO RUNS</div>
-          <div id="lb-ronaldo"></div>
+          <div class="dual-lb-list" id="lb-ronaldo"></div>
+          <div class="my-rank-tag" id="rank-ronaldo"></div>
         </div>
       </div>
       <div class="lb-status" id="menu-lb-status" style="text-align:center"></div>
@@ -180,9 +203,17 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const LB_ENABLED = SUPABASE_URL && SUPABASE_ANON_KEY;
 
 async function sbInsertScore(name, score, player, jersey) {
-  if (!LB_ENABLED) return;
+  if (!LB_ENABLED) { console.warn("[GOAT] leaderboard disabled — keys not set"); return; }
+  // client-side plausibility: score advances ~1/frame at ~60fps, so a real
+  // run of `score` points takes at least ~score/70 seconds. reject impossible speed.
+  const elapsedSec = (Date.now() - runStartTime) / 1000;
+  const maxPlausible = elapsedSec * 70 + 50; // generous headroom for fast machines
+  if (score > maxPlausible) {
+    console.warn("[GOAT] score rejected client-side (too fast for elapsed time)");
+    return;
+  }
   try {
-    await fetch(`${SUPABASE_URL}/rest/v1/scores`, {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/scores`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -192,17 +223,51 @@ async function sbInsertScore(name, score, player, jersey) {
       },
       body: JSON.stringify({ name, score, player, jersey })
     });
-  } catch (e) { console.warn("score upload failed", e); }
+    if (!res.ok) {
+      const txt = await res.text();
+      console.error("[GOAT] score insert FAILED", res.status, txt);
+    } else {
+      console.log("[GOAT] score saved:", name, score, player);
+    }
+  } catch (e) { console.error("[GOAT] insert threw", e); }
 }
 
-async function sbFetchTopForPlayer(who) {
+async function sbFetchTopForPlayer(who, limit) {
   if (!LB_ENABLED) return null;
   try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/scores?select=name,score&player=eq.${who}&order=score.desc&limit=5`, {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/scores?select=name,score&player=eq.${who}&order=score.desc&limit=${limit||50}`, {
       headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}` }
     });
-    if (!r.ok) return null;
+    if (!r.ok) { console.error("[GOAT] fetch failed", who, r.status, await r.text()); return null; }
     return await r.json();
+  } catch (e) { console.error("[GOAT] fetch threw", e); return null; }
+}
+
+// how many scores (for this player) are strictly higher than `myScore`.
+// rank = that count + 1. only meaningful within top 200.
+async function sbFetchRank(who, myScore) {
+  if (!LB_ENABLED || !myScore) return null;
+  try {
+    // ask for up to 200 better scores; use Content-Range header to get exact count
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/scores?select=score&player=eq.${who}&score=gt.${myScore}&limit=200`, {
+      headers: {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+        "Prefer": "count=exact",
+        "Range-Unit": "items",
+        "Range": "0-199"
+      }
+    });
+    if (!r.ok) return null;
+    const cr = r.headers.get("content-range"); // format like "0-49/137"
+    let better;
+    if (cr && cr.includes("/")) {
+      const total = cr.split("/")[1];
+      better = total === "*" ? (await r.json()).length : parseInt(total, 10);
+    } else {
+      better = (await r.json()).length;
+    }
+    return better + 1; // rank
   } catch (e) { return null; }
 }
 
@@ -407,6 +472,7 @@ const player = { x: 90, y: 0, vy: 0, jumping: false, legDir: 1, animTick: 0 };
 let obstacles = [], fireballs = [];
 let framesToNextObstacle = 60;
 let framesToNextFireball = 0;
+let runStartTime = 0;
 
 function getGroundY() { return canvas.height - 80; }
 
@@ -482,6 +548,35 @@ async function refreshLeaderboard() {
     el.innerHTML = renderRows(myRows);
   }
   if (status) status.textContent = '';
+
+  // show the player's own rank (if they have a personal best and aren't already visible)
+  updateMyRank(messiRows, ronaldoRows);
+}
+
+async function updateMyRank(messiRows, ronaldoRows) {
+  const pb = getPersonalBest();
+  const myName = (getSavedName() || '').toUpperCase();
+  // which side did the player last rep? default to currently selected
+  const side = selectedPlayer; // 'messi' or 'ronaldo'
+  const rows = side === 'messi' ? messiRows : ronaldoRows;
+  const tagEl = document.getElementById(side === 'messi' ? 'rank-messi' : 'rank-ronaldo');
+  const otherTag = document.getElementById(side === 'messi' ? 'rank-ronaldo' : 'rank-messi');
+  if (otherTag) otherTag.textContent = '';
+  if (!tagEl) return;
+  if (!pb) { tagEl.textContent = ''; return; }
+
+  // already visible in the top-50 list? then no need for a rank tag
+  const visible = (rows || []).some(r => (r.name||'').toUpperCase() === myName && r.score === pb);
+  if (visible) { tagEl.textContent = ''; return; }
+
+  const rank = await sbFetchRank(side, pb);
+  if (rank && rank <= 200) {
+    tagEl.textContent = `YOU'RE RANK #${rank}`;
+  } else if (rank && rank > 200) {
+    tagEl.textContent = `OUTSIDE TOP 200 — KEEP GRINDING`;
+  } else {
+    tagEl.textContent = '';
+  }
 }
 
 /* ============================================================
@@ -568,6 +663,7 @@ function startGame() {
   document.getElementById('speed-indicator').style.display='block';
 
   gameState='playing'; score=0; frame=0; gameSpeed=6;
+  runStartTime = Date.now();
   obstacles=[]; fireballs=[];
   groundY=getGroundY(); regenStars(canvas.width, canvas.height);
   player.y=groundY; player.vy=0; player.jumping=false;
